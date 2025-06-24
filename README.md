@@ -3,6 +3,6 @@
 
 # 사용 방법
 ```bash
-pip install -r requirements.txt
-playwright install chromium
+docker build -t naver-crawl .
+docker run naver-crawl
 ```
