@@ -1,9 +1,8 @@
 import asyncio
-from heapq import merge
 from playwright.async_api import async_playwright
-from typing import List, Dict
-import traceback
-from collections import Counter
+from typing import List, Dict, Optional, Tuple
+from geopy.geocoders import Nominatim
+import re
 
 # 타임아웃 상수 (ms)
 TIMEOUT = 10000
@@ -12,6 +11,46 @@ TIMEOUT = 10000
 class NaverMapRestaurantCrawler:
     def __init__(self, headless: bool = True):
         self.headless = headless
+        self.geolocator = Nominatim(user_agent="myGeocoder")
+
+    def clean_address(self, address: str) -> str:
+        """도로명 주소에서 상세 주소 제거"""
+        if not address:
+            return ""
+
+        # 주소 정제를 위한 정규표현식
+        regex = (
+            r"(\w+[원,산,남,울,북,천,주,기,시,도]\s*)?"
+            r"(\w+[구,시,군]\s*)?(\w+[구,시]\s*)?"
+            r"(\w+[면,읍]\s*)"
+            r"?(\w+\d*\w*[동,리,로,길]\s*)"
+            r"?(\w*\d+-?\d*)?"
+        )
+
+        match = re.search(regex, address)
+        if match:
+            return match.group().strip()
+        return address
+
+    def get_coordinates(self, address: str) -> Optional[Tuple[float, float]]:
+        """주소로부터 위도, 경도 추출"""
+        if not address:
+            return None
+
+        try:
+            # 주소 정제
+            cleaned_address = self.clean_address(address)
+
+            # 지오코딩
+            location = self.geolocator.geocode(cleaned_address, timeout=10)
+
+            if location:
+                return (location.latitude, location.longitude)
+            else:
+                return None
+
+        except Exception as e:
+            return None
 
     async def crawl_single_page(self, search_query: str, page_num: int) -> List[Dict]:
         """특정 페이지 하나만 크롤링"""
@@ -183,12 +222,6 @@ class NaverMapRestaurantCrawler:
                         link_elem = await restaurant.query_selector("a.place_bluelink")
 
                         if link_elem:
-
-                            # 새 탭에서 열기를 방지하기 위해 target 속성 제거
-                            # await link_elem.evaluate(
-                            #     '(el) => el.removeAttribute("target")'
-                            # )
-
                             # 클릭
                             await link_elem.click()
 
@@ -199,14 +232,16 @@ class NaverMapRestaurantCrawler:
 
                             # 변경된 URL에서 place ID 추출
                             new_url = page.url
-                            import re
-
                             match = re.search(r"/place/(\d+)", new_url)
                             if match:
                                 place_id = match.group(1)
 
                         # 주소 찾기
                         address = None
+                        cleaned_address = None
+                        latitude = None
+                        longitude = None
+
                         place_detail_url = (
                             f"https://pcmap.place.naver.com/place/{place_id}"
                         )
@@ -221,8 +256,16 @@ class NaverMapRestaurantCrawler:
                                 "span.LDgIH"
                             )
                             address = await address_elem.inner_text()
+
+                            # 주소 정제 및 지오코딩
+                            if address:
+                                cleaned_address = self.clean_address(address)
+                                coordinates = self.get_coordinates(address)
+                                if coordinates:
+                                    latitude, longitude = coordinates
+
                         except Exception as e:
-                            traceback.print_exc()
+                            pass
                         finally:
                             await detail_page.close()
 
@@ -233,15 +276,17 @@ class NaverMapRestaurantCrawler:
                                 "카테고리": category,
                                 "페이지": page_num,
                                 "주소": address,
+                                "정제된_주소": cleaned_address,
+                                "위도": latitude,
+                                "경도": longitude,
                             }
                         )
                         await page.go_back()
                     except Exception as e:
-                        traceback.print_exc()
+                        pass
                 print(f"페이지 {page_num}: {len(restaurants)}개 수집")
 
             except Exception as e:
-                traceback.print_exc()
                 print(f"페이지 {page_num} 크롤링 중 오류: {str(e)}")
             finally:
                 await browser.close()
@@ -251,13 +296,15 @@ class NaverMapRestaurantCrawler:
 # 사용 예시
 async def main():
 
-    crawler = NaverMapRestaurantCrawler(headless=True)
+    crawler = NaverMapRestaurantCrawler(headless=False)
 
     # 3개 페이지 동시 실행
     tasks = [
         crawler.crawl_single_page("공덕역 식당", 1),
-        # crawler.crawl_single_page("공덕역 식당", 2),
-        # crawler.crawl_single_page("공덕역 식당", 3),
+        crawler.crawl_single_page("공덕역 식당", 2),
+        crawler.crawl_single_page("공덕역 식당", 3),
+        crawler.crawl_single_page("공덕역 식당", 4),
+        crawler.crawl_single_page("공덕역 식당", 5),
     ]
 
     # 모든 결과 대기
@@ -278,13 +325,12 @@ async def main():
     print(f"\n총 {len(unique_results)}개 식당 수집")
     for i, restaurant in enumerate(merged_results, 1):
         print(
-            f"{i}. {restaurant['place_id']} [{restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}] [{restaurant['주소']}]"
+            f"{i}. {restaurant['place_id']} [{restaurant['식당명']}] "
+            f"[{restaurant['카테고리']}] [{restaurant['페이지']}] "
+            f"[원본주소: {restaurant['주소']}] "
+            f"[정제주소: {restaurant['정제된_주소']}] "
+            f"[위도: {restaurant['위도']}, 경도: {restaurant['경도']}]"
         )
-
-    none_place_id = [item for item in merged_results if item["place_id"] is None]
-    print(f"place_id가 None인 식당 수: {len(none_place_id)}")
-    counter = Counter([item["place_id"] for item in merged_results])
-    print("중복 place_id:", [k for k, v in counter.items() if v > 1])
 
 
 if __name__ == "__main__":
