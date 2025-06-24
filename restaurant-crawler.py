@@ -1,12 +1,57 @@
 import asyncio
 from playwright.async_api import async_playwright
-from typing import List, Dict
-import traceback
+from typing import List, Dict, Optional, Tuple
+from geopy.geocoders import Nominatim
+from geopy.location import Location
+import re
+
+# 타임아웃 상수 (ms)
+TIMEOUT = 10000
 
 
 class NaverMapRestaurantCrawler:
     def __init__(self, headless: bool = True):
         self.headless = headless
+        self.geolocator = Nominatim(user_agent="myGeocoder")
+
+    def clean_address(self, address: str) -> str:
+        """도로명 주소에서 상세 주소 제거"""
+        if not address:
+            return ""
+
+        # 주소 정제를 위한 정규표현식
+        regex = (
+            r"(\w+[원,산,남,울,북,천,주,기,시,도]\s*)?"
+            r"(\w+[구,시,군]\s*)?(\w+[구,시]\s*)?"
+            r"(\w+[면,읍]\s*)"
+            r"?(\w+\d*\w*[동,리,로,길]\s*)"
+            r"?(\w*\d+-?\d*)?"
+        )
+
+        match = re.search(regex, address)
+        if match:
+            return match.group().strip()
+        return address
+
+    def get_coordinates(self, address: str) -> Optional[Tuple[float, float]]:
+        """주소로부터 위도, 경도 추출"""
+        if not address:
+            return None
+
+        try:
+            # 주소 정제
+            cleaned_address = self.clean_address(address)
+
+            # 지오코딩 (geopy의 geocode는 동기 함수임)
+            location = self.geolocator.geocode(cleaned_address)
+            # location이 None이 아니고, geopy.location.Location 타입이어야 함
+            if isinstance(location, Location):
+                return (location.latitude, location.longitude)
+            else:
+                return None
+
+        except Exception as e:
+            return None
 
     async def crawl_single_page(self, search_query: str, page_num: int) -> List[Dict]:
         """특정 페이지 하나만 크롤링"""
@@ -81,14 +126,14 @@ class NaverMapRestaurantCrawler:
                 await page.goto("https://map.naver.com/", wait_until="domcontentloaded")
 
                 search_input = await page.wait_for_selector(
-                    "input.input_search", state="visible"
+                    "input.input_search", state="visible", timeout=TIMEOUT
                 )
                 await search_input.click()
                 await search_input.fill(search_query)
                 await search_input.press("Enter")
 
                 await page.wait_for_selector(
-                    "iframe#searchIframe", state="visible", timeout=100000
+                    "iframe#searchIframe", state="visible", timeout=TIMEOUT
                 )
                 iframe_element = await page.query_selector("iframe#searchIframe")
 
@@ -140,7 +185,7 @@ class NaverMapRestaurantCrawler:
                     return results
 
                 await frame.wait_for_selector(
-                    "li.UEzoS", state="visible", timeout=100000
+                    "li.UEzoS", state="visible", timeout=TIMEOUT
                 )
 
                 # 페이지 이동
@@ -153,7 +198,7 @@ class NaverMapRestaurantCrawler:
                     await page_link.click()
                     await asyncio.sleep(3)
                     await frame.wait_for_selector(
-                        "li.UEzoS", state="visible", timeout=100000
+                        "li.UEzoS", state="visible", timeout=TIMEOUT
                     )
 
                 # 데이터 추출
@@ -161,25 +206,88 @@ class NaverMapRestaurantCrawler:
 
                 for restaurant in restaurants:
                     try:
+                        # 식당 이름 정보
                         name_elem = await restaurant.query_selector("span.TYaxT")
                         name = (
                             await name_elem.inner_text() if name_elem else "이름 없음"
                         )
 
+                        # 식당 카테고리 정보
                         category_elem = await restaurant.query_selector("span.KCMnt")
                         category = (
                             await category_elem.inner_text() if category_elem else ""
                         )
 
-                        results.append(
-                            {"식당명": name, "카테고리": category, "페이지": page_num}
+                        # 식당 place_id 정보
+                        place_id = None
+                        link_elem = await restaurant.query_selector("a.place_bluelink")
+
+                        if link_elem:
+                            # 클릭
+                            await link_elem.click()
+
+                            # URL 변경 대기 (최대 3초)
+                            await page.wait_for_url(
+                                lambda url: "/place/" in url, timeout=TIMEOUT
+                            )
+
+                            # 변경된 URL에서 place ID 추출
+                            new_url = page.url
+                            match = re.search(r"/place/(\d+)", new_url)
+                            if match:
+                                place_id = match.group(1)
+
+                        # 주소 찾기
+                        address = None
+                        cleaned_address = None
+                        latitude = None
+                        longitude = None
+
+                        place_detail_url = (
+                            f"https://pcmap.place.naver.com/place/{place_id}"
                         )
-                    except:
-                        continue
+                        detail_page = await context.new_page()
+
+                        try:
+                            await detail_page.goto(place_detail_url)
+                            await detail_page.wait_for_selector(
+                                "span.LDgIH", timeout=TIMEOUT
+                            )
+                            address_elem = await detail_page.query_selector(
+                                "span.LDgIH"
+                            )
+                            address = await address_elem.inner_text()
+
+                            # 주소 정제 및 지오코딩
+                            if address:
+                                cleaned_address = self.clean_address(address)
+                                coordinates = self.get_coordinates(address)
+                                if coordinates:
+                                    latitude, longitude = coordinates
+
+                        except Exception as e:
+                            pass
+                        finally:
+                            await detail_page.close()
+
+                        results.append(
+                            {
+                                "place_id": place_id,
+                                "name": name,
+                                "category": category,
+                                "page": page_num,
+                                "origin_address": address,
+                                "address": cleaned_address,
+                                "latitude": latitude,
+                                "longitude": longitude,
+                            }
+                        )
+                        await page.go_back()
+                    except Exception as e:
+                        pass
                 print(f"페이지 {page_num}: {len(restaurants)}개 수집")
 
             except Exception as e:
-                traceback.print_exc()
                 print(f"페이지 {page_num} 크롤링 중 오류: {str(e)}")
             finally:
                 await browser.close()
@@ -196,6 +304,8 @@ async def main():
         crawler.crawl_single_page("공덕역 식당", 1),
         crawler.crawl_single_page("공덕역 식당", 2),
         crawler.crawl_single_page("공덕역 식당", 3),
+        crawler.crawl_single_page("공덕역 식당", 4),
+        crawler.crawl_single_page("공덕역 식당", 5),
     ]
 
     # 모든 결과 대기
@@ -209,14 +319,18 @@ async def main():
     unique_results = []
     seen = set()
     for item in merged_results:
-        if item["식당명"] not in seen:
-            seen.add(item["식당명"])
+        if item["place_id"] not in seen:
+            seen.add(item["place_id"])
             unique_results.append(item)
 
     print(f"\n총 {len(unique_results)}개 식당 수집")
-    for i, restaurant in enumerate(unique_results, 1):
+    for i, restaurant in enumerate(merged_results, 1):
         print(
-            f"{i}. {restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}]"
+            f"{i}. {restaurant['place_id']} [{restaurant['name']}] "
+            f"[{restaurant['category']}] [{restaurant['page']}] "
+            f"[origin_address: {restaurant['origin_address']}] "
+            f"[address: {restaurant['address']}] "
+            f"[latitude: {restaurant['latitude']}, longitude: {restaurant['longitude']}]"
         )
 
 
