@@ -95,7 +95,6 @@ class NaverMapRestaurantCrawler:
                 frame = await iframe_element.content_frame()
 
                 if frame:
-                    print("무한 스크롤 시작...")
                     previous_count = 0
                     no_change_count = 0
                     max_no_change = 3  # 3번 연속으로 변화가 없으면 종료
@@ -105,12 +104,9 @@ class NaverMapRestaurantCrawler:
                         current_restaurants = await frame.query_selector_all("li.UEzoS")
                         current_count = len(current_restaurants)
 
-                        print(f"현재 로드된 식당 수: {current_count}")
-
                         # 변화가 없으면 카운트 증가
                         if current_count == previous_count:
                             no_change_count += 1
-                            print(f"변화 없음 (연속 {no_change_count}회)")
 
                             if no_change_count >= max_no_change:
                                 print("더 이상 로드할 데이터가 없습니다.")
@@ -193,7 +189,7 @@ class NaverMapRestaurantCrawler:
 # 사용 예시
 async def main():
 
-    crawler = NaverMapRestaurantCrawler(headless=False)
+    crawler = NaverMapRestaurantCrawler(headless=True)
 
     # 3개 페이지 동시 실행
     tasks = [
