@@ -2,6 +2,7 @@ import asyncio
 from playwright.async_api import async_playwright
 from typing import List, Dict, Optional, Tuple
 from geopy.geocoders import Nominatim
+from geopy.location import Location
 import re
 
 # 타임아웃 상수 (ms)
@@ -41,10 +42,10 @@ class NaverMapRestaurantCrawler:
             # 주소 정제
             cleaned_address = self.clean_address(address)
 
-            # 지오코딩
-            location = self.geolocator.geocode(cleaned_address, timeout=10)
-
-            if location:
+            # 지오코딩 (geopy의 geocode는 동기 함수임)
+            location = self.geolocator.geocode(cleaned_address)
+            # location이 None이 아니고, geopy.location.Location 타입이어야 함
+            if isinstance(location, Location):
                 return (location.latitude, location.longitude)
             else:
                 return None
@@ -272,13 +273,13 @@ class NaverMapRestaurantCrawler:
                         results.append(
                             {
                                 "place_id": place_id,
-                                "식당명": name,
-                                "카테고리": category,
-                                "페이지": page_num,
-                                "주소": address,
-                                "정제된_주소": cleaned_address,
-                                "위도": latitude,
-                                "경도": longitude,
+                                "name": name,
+                                "category": category,
+                                "page": page_num,
+                                "origin_address": address,
+                                "address": cleaned_address,
+                                "latitude": latitude,
+                                "longitude": longitude,
                             }
                         )
                         await page.go_back()
@@ -296,7 +297,7 @@ class NaverMapRestaurantCrawler:
 # 사용 예시
 async def main():
 
-    crawler = NaverMapRestaurantCrawler(headless=False)
+    crawler = NaverMapRestaurantCrawler(headless=True)
 
     # 3개 페이지 동시 실행
     tasks = [
@@ -325,11 +326,11 @@ async def main():
     print(f"\n총 {len(unique_results)}개 식당 수집")
     for i, restaurant in enumerate(merged_results, 1):
         print(
-            f"{i}. {restaurant['place_id']} [{restaurant['식당명']}] "
-            f"[{restaurant['카테고리']}] [{restaurant['페이지']}] "
-            f"[원본주소: {restaurant['주소']}] "
-            f"[정제주소: {restaurant['정제된_주소']}] "
-            f"[위도: {restaurant['위도']}, 경도: {restaurant['경도']}]"
+            f"{i}. {restaurant['place_id']} [{restaurant['name']}] "
+            f"[{restaurant['category']}] [{restaurant['page']}] "
+            f"[origin_address: {restaurant['origin_address']}] "
+            f"[address: {restaurant['address']}] "
+            f"[latitude: {restaurant['latitude']}, longitude: {restaurant['longitude']}]"
         )
 
 

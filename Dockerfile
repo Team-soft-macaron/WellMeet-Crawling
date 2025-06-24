@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install playwright==1.41.0 && playwright install chromium
+RUN pip install -r requirements.txt && playwright install chromium
 
 COPY . .
 
