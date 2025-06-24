@@ -170,9 +170,42 @@ class NaverMapRestaurantCrawler:
                         category = (
                             await category_elem.inner_text() if category_elem else ""
                         )
+                        place_id = None
+                        link_elem = await restaurant.query_selector("a.place_bluelink")
+                        print(link_elem)
+                        if link_elem:
+                            # 현재 URL 저장
+                            current_url = page.url
+
+                            # 새 탭에서 열기를 방지하기 위해 target 속성 제거
+                            await link_elem.evaluate(
+                                '(el) => el.removeAttribute("target")'
+                            )
+
+                            # 클릭
+                            await link_elem.click()
+
+                            # URL 변경 대기 (최대 3초)
+                            await page.wait_for_url(
+                                lambda url: "/place/" in url, timeout=3000
+                            )
+
+                            # 변경된 URL에서 place ID 추출
+                            new_url = page.url
+                            print(new_url)
+                            import re
+
+                            match = re.search(r"/place/(\d+)", new_url)
+                            if match:
+                                place_id = match.group(1)
 
                         results.append(
-                            {"식당명": name, "카테고리": category, "페이지": page_num}
+                            {
+                                "place_id": place_id,
+                                "식당명": name,
+                                "카테고리": category,
+                                "페이지": page_num,
+                            }
                         )
                     except:
                         continue
@@ -194,8 +227,8 @@ async def main():
     # 3개 페이지 동시 실행
     tasks = [
         crawler.crawl_single_page("공덕역 식당", 1),
-        crawler.crawl_single_page("공덕역 식당", 2),
-        crawler.crawl_single_page("공덕역 식당", 3),
+        # crawler.crawl_single_page("공덕역 식당", 2),
+        # crawler.crawl_single_page("공덕역 식당", 3),
     ]
 
     # 모든 결과 대기
@@ -209,14 +242,14 @@ async def main():
     unique_results = []
     seen = set()
     for item in merged_results:
-        if item["식당명"] not in seen:
-            seen.add(item["식당명"])
+        if item["place_id"] not in seen:
+            seen.add(item["place_id"])
             unique_results.append(item)
 
     print(f"\n총 {len(unique_results)}개 식당 수집")
     for i, restaurant in enumerate(unique_results, 1):
         print(
-            f"{i}. {restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}]"
+            f"{i}. {restaurant['place_id']} [{restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}]"
         )
 
 
