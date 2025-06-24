@@ -1,7 +1,12 @@
 import asyncio
+from heapq import merge
 from playwright.async_api import async_playwright
 from typing import List, Dict
 import traceback
+from collections import Counter
+
+# 타임아웃 상수 (ms)
+TIMEOUT = 10000
 
 
 class NaverMapRestaurantCrawler:
@@ -81,14 +86,14 @@ class NaverMapRestaurantCrawler:
                 await page.goto("https://map.naver.com/", wait_until="domcontentloaded")
 
                 search_input = await page.wait_for_selector(
-                    "input.input_search", state="visible"
+                    "input.input_search", state="visible", timeout=TIMEOUT
                 )
                 await search_input.click()
                 await search_input.fill(search_query)
                 await search_input.press("Enter")
 
                 await page.wait_for_selector(
-                    "iframe#searchIframe", state="visible", timeout=100000
+                    "iframe#searchIframe", state="visible", timeout=TIMEOUT
                 )
                 iframe_element = await page.query_selector("iframe#searchIframe")
 
@@ -140,7 +145,7 @@ class NaverMapRestaurantCrawler:
                     return results
 
                 await frame.wait_for_selector(
-                    "li.UEzoS", state="visible", timeout=100000
+                    "li.UEzoS", state="visible", timeout=TIMEOUT
                 )
 
                 # 페이지 이동
@@ -153,7 +158,7 @@ class NaverMapRestaurantCrawler:
                     await page_link.click()
                     await asyncio.sleep(3)
                     await frame.wait_for_selector(
-                        "li.UEzoS", state="visible", timeout=100000
+                        "li.UEzoS", state="visible", timeout=TIMEOUT
                     )
 
                 # 데이터 추출
@@ -161,43 +166,65 @@ class NaverMapRestaurantCrawler:
 
                 for restaurant in restaurants:
                     try:
+                        # 식당 이름 정보
                         name_elem = await restaurant.query_selector("span.TYaxT")
                         name = (
                             await name_elem.inner_text() if name_elem else "이름 없음"
                         )
 
+                        # 식당 카테고리 정보
                         category_elem = await restaurant.query_selector("span.KCMnt")
                         category = (
                             await category_elem.inner_text() if category_elem else ""
                         )
+
+                        # 식당 place_id 정보
                         place_id = None
                         link_elem = await restaurant.query_selector("a.place_bluelink")
-                        print(link_elem)
+
                         if link_elem:
-                            # 현재 URL 저장
-                            current_url = page.url
 
                             # 새 탭에서 열기를 방지하기 위해 target 속성 제거
-                            await link_elem.evaluate(
-                                '(el) => el.removeAttribute("target")'
-                            )
+                            # await link_elem.evaluate(
+                            #     '(el) => el.removeAttribute("target")'
+                            # )
 
                             # 클릭
                             await link_elem.click()
 
                             # URL 변경 대기 (최대 3초)
                             await page.wait_for_url(
-                                lambda url: "/place/" in url, timeout=3000
+                                lambda url: "/place/" in url, timeout=TIMEOUT
                             )
 
                             # 변경된 URL에서 place ID 추출
                             new_url = page.url
-                            print(new_url)
                             import re
 
                             match = re.search(r"/place/(\d+)", new_url)
                             if match:
                                 place_id = match.group(1)
+
+                        # 주소 찾기
+                        address = None
+                        place_detail_url = (
+                            f"https://pcmap.place.naver.com/place/{place_id}"
+                        )
+                        detail_page = await context.new_page()
+
+                        try:
+                            await detail_page.goto(place_detail_url)
+                            await detail_page.wait_for_selector(
+                                "span.LDgIH", timeout=TIMEOUT
+                            )
+                            address_elem = await detail_page.query_selector(
+                                "span.LDgIH"
+                            )
+                            address = await address_elem.inner_text()
+                        except Exception as e:
+                            traceback.print_exc()
+                        finally:
+                            await detail_page.close()
 
                         results.append(
                             {
@@ -205,10 +232,12 @@ class NaverMapRestaurantCrawler:
                                 "식당명": name,
                                 "카테고리": category,
                                 "페이지": page_num,
+                                "주소": address,
                             }
                         )
-                    except:
-                        continue
+                        await page.go_back()
+                    except Exception as e:
+                        traceback.print_exc()
                 print(f"페이지 {page_num}: {len(restaurants)}개 수집")
 
             except Exception as e:
@@ -247,10 +276,15 @@ async def main():
             unique_results.append(item)
 
     print(f"\n총 {len(unique_results)}개 식당 수집")
-    for i, restaurant in enumerate(unique_results, 1):
+    for i, restaurant in enumerate(merged_results, 1):
         print(
-            f"{i}. {restaurant['place_id']} [{restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}]"
+            f"{i}. {restaurant['place_id']} [{restaurant['식당명']} [{restaurant['카테고리']}] [{restaurant['페이지']}] [{restaurant['주소']}]"
         )
+
+    none_place_id = [item for item in merged_results if item["place_id"] is None]
+    print(f"place_id가 None인 식당 수: {len(none_place_id)}")
+    counter = Counter([item["place_id"] for item in merged_results])
+    print("중복 place_id:", [k for k, v in counter.items() if v > 1])
 
 
 if __name__ == "__main__":
