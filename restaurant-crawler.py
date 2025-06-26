@@ -4,6 +4,9 @@ from typing import List, Dict, Optional, Tuple
 from geopy.geocoders import Nominatim
 from geopy.location import Location
 import re
+import json
+from storage_manager import RestaurantStorageManager
+import os
 
 # 타임아웃 상수 (ms)
 TIMEOUT = 10000
@@ -296,35 +299,51 @@ class NaverMapRestaurantCrawler:
 
 # 사용 예시
 async def main():
+    # S3 설정 (환경변수 사용)
+    BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
+    AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
+    AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    REGION_NAME = os.environ.get("AWS_REGION", "ap-northeast-2")
+
+    search_query = "공덕역 식당"
+    print(f"search_query: {search_query}")
+
+    # S3 매니저 생성
+    s3_manager = RestaurantStorageManager(
+        bucket_name=BUCKET_NAME,
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=REGION_NAME,
+    )
+
+    # 1. S3에서 기존 place_id 리스트 가져오기
+    existing_place_ids = set(s3_manager.get_restaurant_ids_with_s3_select(search_query))
 
     crawler = NaverMapRestaurantCrawler(headless=True)
 
-    # 3개 페이지 동시 실행
+    # 2. 여러 페이지 동시 실행
     tasks = [
-        crawler.crawl_single_page("공덕역 식당", 1),
-        crawler.crawl_single_page("공덕역 식당", 2),
-        crawler.crawl_single_page("공덕역 식당", 3),
-        crawler.crawl_single_page("공덕역 식당", 4),
-        crawler.crawl_single_page("공덕역 식당", 5),
+        crawler.crawl_single_page(search_query, 1),
+        crawler.crawl_single_page(search_query, 2),
+        crawler.crawl_single_page(search_query, 3),
+        crawler.crawl_single_page(search_query, 4),
     ]
 
-    # 모든 결과 대기
+    # 3. 모든 결과 대기
     all_results = await asyncio.gather(*tasks)
 
-    # 결과 병합 및 중복 제거
+    # 4. 결과 병합
     merged_results = []
     for page_results in all_results:
         merged_results.extend(page_results)
 
-    unique_results = []
-    seen = set()
-    for item in merged_results:
-        if item["place_id"] not in seen:
-            seen.add(item["place_id"])
-            unique_results.append(item)
+    # 5. 기존 place_id와 중복 제거
+    deduped_results = [
+        item for item in merged_results if item["place_id"] not in existing_place_ids
+    ]
 
-    print(f"\n총 {len(unique_results)}개 식당 수집")
-    for i, restaurant in enumerate(merged_results, 1):
+    print(f"\n총 {len(deduped_results)}개 신규 식당 수집")
+    for i, restaurant in enumerate(deduped_results, 1):
         print(
             f"{i}. {restaurant['place_id']} [{restaurant['name']}] "
             f"[{restaurant['category']}] [{restaurant['page']}] "
@@ -333,6 +352,11 @@ async def main():
             f"[latitude: {restaurant['latitude']}, longitude: {restaurant['longitude']}]"
         )
 
+    # 6. S3에 업로드 (신규만)
+    if deduped_results:
+        s3_manager.upload_restaurants_json(search_query, deduped_results)
+    else:
+        print("신규 식당 없음, 업로드 생략")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+
+asyncio.run(main())
