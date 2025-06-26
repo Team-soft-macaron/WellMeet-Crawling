@@ -126,6 +126,7 @@ class NaverMapRestaurantCrawler:
             results = []
 
             try:
+                await page.goto("https://httpbin.org/ip")
                 await page.goto("https://map.naver.com/", wait_until="domcontentloaded")
 
                 search_input = await page.wait_for_selector(
