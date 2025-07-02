@@ -265,7 +265,7 @@ class NaverMapRestaurantCrawler:
                             # 주소 정제 및 지오코딩
                             if address:
                                 cleaned_address = self.clean_address(address)
-                                coordinates = self.get_coordinates(address)
+                                coordinates = self.get_coordinates(cleaned_address)
                                 if coordinates:
                                     latitude, longitude = coordinates
 
